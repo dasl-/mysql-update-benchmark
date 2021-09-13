@@ -1,0 +1,377 @@
+#!/usr/bin/env php
+<?php
+
+function main(): void {
+    $args = getArgs();
+    $pdo = getPdo($args['host'], $args['port'], $args['user'], $args['password'], $args['disable_bin_log']);
+    ini_set('memory_limit', '-1');
+    switch ($args['test_type']) {
+        case 'individual':
+            doIndividualUpdate($pdo, $args['table'], $args['sort'], $args['limit']);
+            break;
+        case 'transaction':
+            doTransactionUpdate($pdo, $args['table'], $args['batch_size'], $args['sort'], $args['limit']);
+            break;
+        case 'iodku':
+            doIodkuUpdate($pdo, $args['table'], $args['batch_size'], $args['sort'], $args['limit']);
+            break;
+        case 'insert':
+            doInsert($pdo, $args['table'], $args['num_rows'], $args['batch_size'], $args['sort'], $args['force']);
+            break;
+        default:
+            throw new Exception("Invalid TEST_TYPE");
+    }
+    $max_mem_gb = round(memory_get_peak_usage() / 1024 / 1024 / 1024, 2);
+    info("Used $max_mem_gb GB RAM.");
+}
+
+function helpMessage(): void {
+    echo <<<EOT
+mysql update benchmark
+
+Usage: ./update_benchmark -H HOST -P PORT -u USER -p PASSWORD -T TABLE -t TEST_TYPE [-b BATCH_SIZE] [-n NUM_ROWS] [-s] [-f]
+    -h              Show this message
+    -H  HOST        mysql host
+    -P  PORT        mysql port
+    -u  USER        mysql user
+    -p  PASSWORD    mysql password
+    -T  table       mysql table to use. This must be a fully qualified table name: `database.table`
+    -t  TEST_TYPE   Test type. One of 'individual', 'transaction', 'iodku', or 'insert'
+    -s              Sort. Insert / update rows in sorted PK order.
+    -d              Disable mysql binary logging
+    -b  BATCH_SIZE  Batch size. Applicable for 'transaction', 'iodku', and 'insert' test types. Default: 1000.
+    -n  NUM_ROWS    Number of rows to create when test type is 'insert'. Default: 1000000.
+    -l  LIMIT       Limit the number of rows to update. Default: unlimited.
+    -f              Force. Use to overwrite existing data.
+
+EOT;
+    exit();
+}
+
+function getArgs(): array {
+    $args = getopt("hH:P:u:p:T:t:b:n:l:sfd");
+    if (isset($args["h"])) {
+        helpMessage();
+    }
+
+    if (!isset($args['H'])) {
+        error('mysql host must be specified');
+        exit(1);
+    }
+
+    if (!isset($args['P'])) {
+        error('mysql port must be specified');
+        exit(1);
+    }
+
+    if (!isset($args['u'])) {
+        error('mysql user must be specified');
+        exit(1);
+    }
+
+    if (!isset($args['p'])) {
+        error('mysql password must be specified');
+        exit(1);
+    }
+
+    if (!isset($args['T'])) {
+        error('mysql table must be specified');
+        exit(1);
+    }
+
+    if (!isset($args['t'])) {
+        error('TEST_TYPE must be specified');
+        exit(1);
+    }
+
+    return [
+        'host' => $args['H'],
+        'port' => (int) $args['P'],
+        'user' => $args['u'],
+        'password' => $args['p'],
+        'table' => $args['T'],
+        'test_type' => $args['t'],
+        'batch_size' => (int) ($args['b'] ?? 1000),
+        'num_rows' => (int) ($args['n'] ?? 1000000),
+        'limit' => (int) ($args['l'] ?? 0),
+        'force' => isset($args['f']),
+        'sort' => isset($args['s']),
+        'disable_bin_log' => isset($args['d']),
+    ];
+}
+
+function doInsert(PDO $pdo, string $table, int $num_rows, int $batch_size, bool $sort, bool $force): void {
+    info("Doing insert. Table: $table, num rows: $num_rows, batch size: $batch_size, sort: " .
+        ((int) $sort) . ", force: " . ((int) $force) . "...");
+    [$database, $table] = parseTableName($table);
+
+    // create database
+    $pdo->exec("CREATE DATABASE IF NOT EXISTS $database");
+
+    // check if table has existing data; delete it if yes.
+    $statement = $pdo->prepare("SELECT EXISTS (SELECT 1 FROM $database.$table) as ex");
+    $table_exists = true;
+    try {
+        $statement->execute();
+    } catch (PDOException $e) {
+        $error_info = $statement->errorInfo();
+        if ($error_info[0] === '42S02' && $error_info[1] === 1146) {
+            $table_exists = false;
+        }
+    }
+
+    if ($table_exists) {
+        $res = $statement->fetchAll(PDO::FETCH_ASSOC);
+        if ($res === false) {
+            throw new Exception("unable to fetchAll");
+        }
+        $table_has_data = ($res[0]['ex'] ?? "1") === "1";
+        if ($table_has_data) { // data already exists in the table
+            if (!$force) {
+                throw new Exception("Data already present in $database.$table. To overwrite, use the '-f' flag.");
+            } else {
+                // delete existing data if present
+                $pdo->exec("DROP TABLE $database.$table");
+            }
+        }
+    }
+
+    // create table
+    $create_table_sql = <<<sql
+    CREATE TABLE IF NOT EXISTS $database.$table (
+        `email` VARCHAR(50),
+        `user_id` bigint(20) unsigned NOT NULL DEFAULT '0',
+        PRIMARY KEY (`email`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8;"
+    sql;
+    $pdo->exec($create_table_sql);
+
+    // insert
+    $emails = [];
+    for ($i = 0; $i < $num_rows; $i++) {
+        if ($i % 100000 === 0) {
+            info("Generating random emails: $i/$num_rows...");
+        }
+        $random_email = null;
+        while (true) { // generate  a unique random email
+            $random_email = randomAlphaNumericString(38) . '@example.com';
+            if (isset($emails[$random_email])) {
+                continue;
+            }
+            $emails[$random_email] = true;
+            break;
+        }
+    }
+    $emails = array_keys($emails);
+    if ($sort) {
+        sort($emails);
+    }
+    $chunks = array_chunk($emails, $batch_size);
+    $placeholders = generatePlaceholders($batch_size);
+    info("Starting timers...");
+    $insert_time_start = hrtime(true);
+    $prepared_statement = $pdo->prepare("INSERT INTO $database.$table (email, user_id) VALUES $placeholders");
+    for ($i = 0; $i < count($chunks); $i++) {
+        info("Inserting data. Operating on batch " . ($i+1) . "/" . count($chunks) . "...");
+        $chunk = $chunks[$i];
+        $statement = null;
+        $chunk_size = count($chunk);
+        if ($chunk_size === $batch_size) {
+            $statement = $prepared_statement;
+        } else {
+            $statement = $pdo->prepare("INSERT INTO $database.$table (email, user_id) VALUES " . generatePlaceholders($chunk_size));
+        }
+        for ($j = 0; $j < $chunk_size; $j++) {
+            $statement->bindValue($j * 2 + 1, $chunk[$j], PDO::PARAM_STR); // email
+            $statement->bindValue($j * 2 + 2, 0, PDO::PARAM_INT); // user_id
+        }
+        $statement->execute();
+    }
+    $elapsed_s = round((hrtime(true) - $insert_time_start) / 1e9, 2);
+    info("Mysql inserts took: $elapsed_s s.");
+}
+
+function doIndividualUpdate(PDO $pdo, string $table, bool $sort, int $limit): void {
+    info("Doing individual update. Table: $table, sort: " . ((int) $sort) . ", limit: $limit ...");
+    $rows = getRowsToUpdate($pdo, $table, $limit);
+    $num_rows = count($rows);
+    if (!$sort) {
+        shuffle($rows);
+    }
+    $user_ids = getUserIdsForUpdate($num_rows);
+    [$database, $table] = parseTableName($table);
+    $statement = $pdo->prepare("UPDATE $database.$table SET user_id = :user_id WHERE email = :email");
+    info("Starting timers...");
+    $update_time_start = hrtime(true);
+    for ($i = 0; $i < $num_rows; $i++) {
+        if ($i % 1000 === 0) {
+            info('Updating row ' . $i . ' of ' . $num_rows . '...');
+        }
+        $row = $rows[$i];
+        $user_id = $user_ids[$i];
+        $statement->bindValue(':user_id', $user_id, PDO::PARAM_INT);
+        $statement->bindValue(':email', $row['email'], PDO::PARAM_STR);
+        $statement->execute();
+    }
+    $elapsed_s = round((hrtime(true) - $update_time_start) / 1e9, 2);
+    info("Mysql individual updates took: $elapsed_s s.");
+}
+
+function doTransactionUpdate(PDO $pdo, string $table, int $batch_size, bool $sort, int $limit): void {
+    info("Doing transaction update. Table: $table, batch size: $batch_size, sort: " . ((int) $sort) . ", limit: $limit ...");
+    $rows = getRowsToUpdate($pdo, $table, $limit);
+    $num_rows = count($rows);
+    if (!$sort) {
+        shuffle($rows);
+    }
+    $user_ids = getUserIdsForUpdate($num_rows);
+    [$database, $table] = parseTableName($table);
+    $statement = $pdo->prepare("UPDATE $database.$table SET user_id = :user_id WHERE email = :email");
+    $transaction_chunks = array_chunk($rows, $batch_size);
+    $num_chunks = count($transaction_chunks);
+    info("Starting timers...");
+    $update_time_start = hrtime(true);
+    for ($i = 0; $i < $num_chunks; $i++) {
+        $chunk = $transaction_chunks[$i];
+        info('Updating batch ' . ($i + 1) . '/' . $num_chunks . '...');
+        if (!$pdo->beginTransaction()) {
+            throw new Exception('Unable to begin transaction');
+        }
+        for ($j = 0; $j < count($chunk); $j++) {
+            $row = $chunk[$j];
+            $user_id = $user_ids[$i * $batch_size + $j];
+            $statement->bindValue(':user_id', $user_id, PDO::PARAM_INT);
+            $statement->bindValue(':email', $row['email'], PDO::PARAM_STR);
+            $statement->execute();
+        }
+        if (!$pdo->commit()) {
+            throw new Exception('Unable to commit transaction');
+        }
+    }
+    $elapsed_s = round((hrtime(true) - $update_time_start) / 1e9, 2);
+    info("Mysql individual updates took: $elapsed_s s.");
+}
+
+function doIodkuUpdate(PDO $pdo, string $table, int $batch_size, bool $sort, int $limit): void {
+    info("Doing iodku update. Table: $table, batch size: $batch_size, sort: " . ((int) $sort) . ", limit: $limit ...");
+    $rows = getRowsToUpdate($pdo, $table, $limit);
+    $num_rows = count($rows);
+    if (!$sort) {
+        shuffle($rows);
+    }
+    $user_ids = getUserIdsForUpdate($num_rows);
+    [$database, $table] = parseTableName($table);
+
+    $chunks = array_chunk($rows, $batch_size);
+    $placeholders = generatePlaceholders($batch_size);
+    info("Starting timers...");
+    $iodku_time_start = hrtime(true);
+    $prepared_statement = $pdo->prepare("INSERT INTO $database.$table (email, user_id) VALUES $placeholders " .
+        "ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)");
+    for ($i = 0; $i < count($chunks); $i++) {
+        info("Updating batch " . ($i+1) . "/" . count($chunks) . "...");
+        $chunk = $chunks[$i];
+        $statement = null;
+        $chunk_size = count($chunk);
+        if ($chunk_size === $batch_size) {
+            $statement = $prepared_statement;
+        } else {
+            $statement = $pdo->prepare("INSERT INTO $database.$table (email, user_id) VALUES " .
+                generatePlaceholders($chunk_size) . " ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)");
+        }
+        for ($j = 0; $j < $chunk_size; $j++) {
+            $statement->bindValue($j * 2 + 1, $chunk[$j]['email'], PDO::PARAM_STR); // email
+            $statement->bindValue($j * 2 + 2, $user_ids[$i * $batch_size + $j], PDO::PARAM_INT); // user_id
+        }
+        $statement->execute();
+    }
+    $elapsed_s = round((hrtime(true) - $iodku_time_start) / 1e9, 2);
+    info("Mysql iodku updates took: $elapsed_s s.");
+}
+
+function getRowsToUpdate(PDO $pdo, string $table, int $limit): array {
+    $limit_clause = '';
+    if ($limit) {
+        $limit_clause = " LIMIT $limit ";
+    }
+    [$database, $table] = parseTableName($table);
+    $statement = $pdo->prepare("SELECT * FROM $database.$table ORDER BY email $limit_clause");
+    try {
+        $statement->execute();
+    } catch (PDOException $e) {
+        $error_info = $statement->errorInfo();
+        if ($error_info[0] === '42S02' && $error_info[1] === 1146) {
+            error("Table $database.$table does not exist. Insert data before running the update test via `-t insert`.");
+            exit(1);
+        }
+    }
+    return $statement->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function getUserIdsForUpdate($num_rows): array {
+    $user_ids = [];
+    for ($i = 0; $i < $num_rows; $i++) {
+        while (true) { // generate unique user ids
+            $user_id = rand(1, 2147483647);
+            if (isset($user_ids[$user_id])) {
+                continue;
+            }
+            $user_ids[$user_id] = true;
+            break;
+        }
+    }
+    return array_keys($user_ids);
+}
+
+function getPdo(string $host, int $port, string $user, string $password, bool $disable_bin_log): PDO {
+    $opts = [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+    ];
+    if ($disable_bin_log) {
+        info("Disabling binary logging for this session...");
+        $opts[PDO::MYSQL_ATTR_INIT_COMMAND] = 'SET sql_log_bin = 0, @@session.wait_timeout=7200';
+    }
+    return new PDO("mysql:host=$host;port=$port;", $user, $password, $opts);
+}
+
+function parseTableName(string $table): array {
+    if (preg_match('/^[A-z0-9-_\.]+$/', $table) !== 1) {
+        throw new Exception("Table name must match regex: '/^[A-z0-9-_\.]+$/'");
+    }
+    $parts = explode('.', $table);
+    if (count($parts) !== 2) {
+        throw new Exception("table name must be fully qualified: 'database.table'");
+    }
+
+    return $parts;
+}
+
+function generatePlaceholders(int $num): string {
+    return rtrim(str_repeat('(?,?),', $num), ',');
+}
+
+function randomAlphaNumericString(int $length): string {
+    $alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+    $alphabet_length = strlen($alphabet);
+    $s = '';
+    for ($i = 0; $i < $length; $i++) {
+        $random_letter = $alphabet[rand(0, $alphabet_length - 1)];
+        $s .= $random_letter;
+    }
+    return $s;
+}
+
+function error($msg): void {
+    doLog('ERROR', $msg);
+}
+
+function info($msg): void {
+    doLog('INFO', $msg);
+}
+
+function doLog($level, $msg): void {
+    $date = date('Y-m-d H:i:s e');
+    echo "[$date] [$level]: $msg\n";
+}
+
+main();
