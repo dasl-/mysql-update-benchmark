@@ -2,7 +2,11 @@
 :toc:
 :toclevels: 5
 
-This repo contains a command line script https://github.com/dasl-/mysql-update-benchmark/blob/main/update_benchmark[`update_benchmark`] which allows us to compare the performance of different methods for updating data in MySQL. The `update_benchmark` tool is intended to be run from a client host that will be connecting to a remote MySQL server over the network. The `update_benchmark` allows test data to be easily and quickly inserted into MySQL. All of the inserts and updates it performs will be done in a single-threaded process. This process will reuse the same database connection for every query.
+This repo contains a command line script https://github.com/dasl-/mysql-update-benchmark/blob/main/update_benchmark[`update_benchmark`] which allows us to compare the performance of different methods for updating data in MySQL.
+
+MySQL https://dev.mysql.com/doc/refman/5.7/en/insert-optimization.html[documentation] gives several tips about optimizing `INSERT` performance, including a https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[section specific to InnoDB]. To my knowledge, there is no such page of tips for optimizing `UPDATE` performance in official MySQL documentation. Furthermore, these tips do not give estimates of how much they may improve performance. The benchmarks we run here are intended to shed some light on these shortcomings. Some of the tips on optimizing `INSERT` performance may be applicable for `UPDATE` statements.
+
+The `update_benchmark` tool is intended to be run from a client host that will be connecting to a remote MySQL server over the network. The `update_benchmark` allows test data to be easily and quickly inserted into MySQL. All of the inserts and updates it performs will be done in a single-threaded process. This process will reuse the same database connection for every query.
 
 ## Usage
 ....
@@ -56,7 +60,7 @@ We inserted this data using the `update_benchmark` script:
 
 The `update_benchmark` script would generate random emails for each of the 1,000,000 rows it inserted. Each `user_id` would be set to `0`. Next, we would see how long it took to update the `user_id` column to a unique value for each row using various methods. These tests were designed to be similar to how one might backfill a new `user_id` column on a table.
 
-MySQL documentation[https://dev.mysql.com/doc/refman/5.7/en/insert-optimization.html] gives several tips about optimizing INSERT performance, some of which may be applicable to optimizing UPDATE performance:
+MySQL https://dev.mysql.com/doc/refman/5.7/en/insert-optimization.html[documentation] gives several tips about optimizing INSERT performance, some of which may be applicable to optimizing UPDATE performance:
 ____
 The time required for inserting a row is determined by the following factors, where the numbers indicate approximate proportions:
 
