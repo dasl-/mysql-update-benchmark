@@ -29,7 +29,7 @@ function helpMessage(): void {
     echo <<<EOT
 mysql update benchmark
 
-Usage: ./update_benchmark -H HOST -P PORT -u USER -p PASSWORD -T TABLE -t TEST_TYPE [-b BATCH_SIZE] [-n NUM_ROWS] [-s] [-f]
+Usage: ./update_benchmark -H HOST -P PORT -u USER -p PASSWORD -T TABLE -t TEST_TYPE [-b BATCH_SIZE] [-n NUM_ROWS] [-l LIMIT] [-s] [-f] [-d]
     -h              Show this message
     -H  HOST        mysql host
     -P  PORT        mysql port
