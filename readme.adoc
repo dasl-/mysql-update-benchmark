@@ -1,0 +1,196 @@
+# mysql update benchmark
+:toc:
+:toclevels: 5
+
+This repo contains a command line script https://github.com/dasl-/mysql-update-benchmark/blob/main/update_benchmark[`update_benchmark`] which allows us to compare the performance of different methods for updating data in MySQL. The `update_benchmark` tool is intended to be run from a client host that will be connecting to a remote MySQL server over the network. The `update_benchmark` allows test data to be easily and quickly inserted into MySQL. All of the inserts and updates it performs will be done in a single-threaded process. This process will reuse the same database connection for every query.
+
+## Usage
+....
+% ./update_benchmark -h
+mysql update benchmark
+
+Usage: ./update_benchmark -H HOST -P PORT -u USER -p PASSWORD -T TABLE -t TEST_TYPE [-b BATCH_SIZE] [-n NUM_ROWS] [-l LIMIT] [-s] [-f] [-d]
+    -h              Show this message
+    -H  HOST        mysql host
+    -P  PORT        mysql port
+    -u  USER        mysql user
+    -p  PASSWORD    mysql password
+    -T  table       mysql table to use. This must be a fully qualified table name: `database.table`
+    -t  TEST_TYPE   Test type. One of 'individual', 'transaction', 'iodku', or 'insert'
+    -s              Sort. Insert / update rows in sorted PK order.
+    -d              Disable mysql binary logging
+    -b  BATCH_SIZE  Batch size. Applicable for 'transaction', 'iodku', and 'insert' test types. Default: 1000.
+    -n  NUM_ROWS    Number of rows to create when test type is 'insert'. Default: 1000000.
+    -l  LIMIT       Limit the number of rows to update. Default: unlimited.
+    -f              Force. Use to overwrite existing data.
+....
+
+## Benchmark equipment and setup
+
+We ran these benchmark tests against MySQL Percona server:
+....
+% mysql --version
+mysql  Ver 14.14 Distrib 5.7.29-32, for Linux (x86_64) using  6.2
+....
+
+The MySQL server machine was hosted in google cloud platform on an `n2-highmem-4` instance (4 vCPUs, 32 GB memory) with Intel Cascade Lake CPU platform. Queries were issued to the server from a remote client host. MySQL had a 15 GB buffer pool.
+
+We tested against InnoDB tables.
+
+## Updating data benchmark results
+
+In the below tests, we first inserted 1,000,000 rows into a test table with the following schema:
+
+....
+CREATE TABLE `dasl_test` (
+  `email` varchar(50) NOT NULL,
+  `user_id` bigint(20) unsigned NOT NULL DEFAULT '0',
+  PRIMARY KEY (`email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8
+....
+
+We inserted this data using the `update_benchmark` script:
+....
+./update_benchmark -H MYSQL_HOST -P 3306 -u MYSQL_USER -p MYSQL_PASSWORD -T dasl.dasl_test -t insert -b 10000 -f -s -d
+..../
+
+The `update_benchmark` script would generate random emails for each of the 1,000,000 rows it inserted. Each `user_id` would be set to `0`. Next, we would see how long it took to update the `user_id` column to a unique value for each row using various methods. These tests were designed to be similar to how one might backfill a new `user_id` column on a table.
+
+MySQL documentation[https://dev.mysql.com/doc/refman/5.7/en/insert-optimization.html] gives several tips about optimizing INSERT performance, some of which may be applicable to optimizing UPDATE performance:
+____
+The time required for inserting a row is determined by the following factors, where the numbers indicate approximate proportions:
+
+* Connecting: (3)
+* Sending query to server: (2)
+* Parsing query: (2)
+* Inserting row: (1 × size of row)
+* Inserting indexes: (1 × number of indexes)
+* Closing: (1)
+____
+
+MySQL documentation also provides several https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[InnoDB specific tips].
+
+It is likely that the entire 1,000,000 row table fit into the buffer pool. The buffer pool is a RAM based cache for InnoDB table data. Usage of the buffer pool can prevent disk reads, which are generally slower. https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[InnoDB documentation] states writing data in primary key order can give a performance boost in many cases, although the boost may be more apparent in tables that do not fit in the buffer pool. Thus, our performance numbers may change when run on larger tables:
+____
+ When performing bulk inserts, it is faster to insert rows in PRIMARY KEY order. InnoDB tables use a clustered index, which makes it relatively fast to use data in the order of the PRIMARY KEY. Performing bulk inserts in PRIMARY KEY order is particularly important for tables that do not fit entirely within the buffer pool.
+____
+
+### Method 1: individual updates
+The "individual update" test is the most "naive" method. It will essentially run 1,000,000 of the following UPDATE queries in autocommit mode:
+....
+UPDATE dasl.dasl_test SET user_id = :user_id WHERE email = :email
+....
+
+We tested executing the queries in primary key order (sorted by email) and random order. Updating that data in random vs sorted primary key order did not appear to affect performance much. In both cases, the median benchmark time was 46 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _1,000,000 individual updates_ heading.
+
+### Method 2: individual updates within a transaction, varying transaction batch size
+The "transaction" test improves upon Method 1 by wrapping batches of UPDATE statements in database transactions. Essentially, it will do something like:
+....
+START TRANSACTION;
+UPDATE dasl.dasl_test SET user_id = :user_id WHERE email = :email
+UPDATE dasl.dasl_test SET user_id = :user_id WHERE email = :email
+...
+UPDATE dasl.dasl_test SET user_id = :user_id WHERE email = :email
+COMMIT;
+
+START TRANSACTION;
+UPDATE dasl.dasl_test SET user_id = :user_id WHERE email = :email
+UPDATE dasl.dasl_test SET user_id = :user_id WHERE email = :email
+...
+UPDATE dasl.dasl_test SET user_id = :user_id WHERE email = :email
+COMMIT;
+
+# repeat until all rows are updated
+....
+
+The batch size governs how many UPDATE statements we run within each transaction. The intuition behind this approach is to perform fewer flushes to disk (https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[docs]):
+____
+When importing data into InnoDB, turn off autocommit mode, because it performs a log flush to disk for every insert.
+____
+
+Once again, we tested executing the queries in primary key order (sorted by email) and random order. Updating the data in sorted primary key order may have helped marginally, but not by much. Increasing the batch size helped up to a certain point. There appears to be diminishing returns to increasing batch size beyond 10,000. When increasing batch size beyond 100,000, performance may be adversely impacted. Thus we recommend a sweet spot of 10,000 for batch size.
+
+Using a batch size of 10,000, the median benchmark time for updating in random order was 3.7 minutes, and the median benchmark time for updating in sorted primary key order was 3.6 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _1,000,000 individual updates in transaction, varying transaction batch size_ heading. This is approximately a 12x speedup compared to Method 1.
+
+### Method 3: 1,000,000 IODKU updates, varying IODKU batch size
+
+#### SQL constructs for bulk updates
+MySQL's UPDATE statement does not allow us to perform bulk updates where each row gets a unique value for its update. Using an UPDATE statement, we could issue a query like:
+....
+UPDATE dasl.dasl_test SET user_id = :user_id
+WHERE email in ('user1@example.com', 'user2@example.com', ..., 'userN@example.com');
+....
+
+But this would update every row matching the where clause with the same `user_id`. In our examples, we want to update each row with a different `user_id`.
+
+MySQL provides a SQL construct `INSERT ... ON DUPLICATE KEY UPDATE ...` (IODKU) that may be used as a bulk update query:
+....
+INSERT INTO dasl.dasl_test (email, user_id) VALUES
+('user1@example.com', :user_id1), ('user2@example.com', :user_id2), ..., ('userN@example.com', :user_idN)
+ON DUPLICATE KEY UPDATE user_id = VALUES(user_id);
+....
+
+Each row of a MySQL table is guaranteed to have a unique value for its primary key. Inserting a row with the same primary key as an existing row will generate a duplicate key MySQL error. If we construct the values we are inserting such that they are guaranteed generate a duplicate key error (i.e. the emails we are attempting to `INSERT` already exist in the table), then the `ON DUPLICATE KEY UPDATE` clause of the IODKU query will get executed. In the above example, this will result in each row being updated with a different `user_id` that was specified in the `VALUES` clause of the statement.
+
+For example, given our schema:
+....
+CREATE TABLE `dasl_test` (
+  `email` varchar(50) NOT NULL,
+  `user_id` bigint(20) unsigned NOT NULL DEFAULT '0',
+  PRIMARY KEY (`email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8
+....
+
+If we have the following data in the table:
+....
++-------------------+---------+
+| email             | user_id |
++-------------------+---------+
+| user1@example.com |       0 |
+| user2@example.com |       0 |
+| user3@example.com |       0 |
++-------------------+---------+
+....
+
+Then if we issue a IODKU statement:
+....
+INSERT INTO dasl.dasl_test (email, user_id) VALUES
+('user1@example.com', 42798), ('user2@example.com', 29238), ('user3@example.com', 987238)
+ON DUPLICATE KEY UPDATE user_id = VALUES(user_id);
+....
+
+We will then have the following data in the table:
+....
++-------------------+---------+
+| email             | user_id |
++-------------------+---------+
+| user1@example.com |   42798 |
+| user2@example.com |   29238 |
+| user3@example.com |  987238 |
++-------------------+---------+
+....
+
+#### Test results
+The "IODKU" test improves upon Method 2 by issuing fewer SQL statements. Given a batch size `N`, essentially, it will do something like:
+....
+INSERT INTO dasl.dasl_test (email, user_id) VALUES
+(:email1, :user_id1), (:email2, :user_id2), ..., (:emailN, :user_idN)
+ON DUPLICATE KEY UPDATE user_id = VALUES(user_id);
+
+INSERT INTO dasl.dasl_test (email, user_id) VALUES
+(:email1, :user_id1), (:email2, :user_id2), ..., (:emailN, :user_idN)
+ON DUPLICATE KEY UPDATE user_id = VALUES(user_id);
+
+# repeat until all rows are updated
+....
+
+The batch size governs how many rows we update with each SQL statement. The intuition behind this approach is to send fewer queries to the server and parse fewer queries on the server. Communication overhead should be reduced between the client and server.
+
+Once again, we tested executing the queries in primary key order (sorted by email) and random order. Unlike in previous approaches we tested, updating the data in sorted primary key order had a clearer performance benefit with this approach. Like with Method 2, Increasing the batch size helped up to a certain point. There appears to be diminishing returns to increasing batch size beyond 10,000. When increasing batch size beyond 100,000, performance may be adversely impacted. Thus we again recommend a sweet spot of 10,000 for batch size.
+
+Using a batch size of 10,000, the median benchmark time for updating in random order was 25.1 seconds, and the median benchmark time for updating in sorted primary key order was 21.0 seconds. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _1,000,000 iodku updates, varying iodku batch size_ heading. This is approximately a 10x speedup compared to Method 2 and a 130x speedup compared with Method 1.
+
+## Future work
+
+* Test the optimal strategy for parallelizing work. In these benchmark tests, all updates were done in a single thread.
+* Test again on tables that are too large to fully fit in the buffer pool
