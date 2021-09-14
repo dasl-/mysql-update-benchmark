@@ -2,11 +2,12 @@
 :toc:
 :toclevels: 5
 
+## Introduction
 This repo contains a command line script https://github.com/dasl-/mysql-update-benchmark/blob/main/update_benchmark[`update_benchmark`] which allows us to compare the performance of different methods for updating data in MySQL.
 
-MySQL https://dev.mysql.com/doc/refman/5.7/en/insert-optimization.html[documentation] gives several tips about optimizing `INSERT` performance, including a https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[section specific to InnoDB]. To my knowledge, there is no such page of tips for optimizing `UPDATE` performance in official MySQL documentation. Furthermore, these tips do not give estimates of how much they may improve performance. The benchmarks we run here are intended to shed some light on these shortcomings. Some of the tips on optimizing `INSERT` performance may be applicable for `UPDATE` statements.
+MySQL https://dev.mysql.com/doc/refman/5.7/en/insert-optimization.html[documentation] gives several tips about optimizing `INSERT` performance, including a https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[section specific to InnoDB]. To my knowledge, there is no such page of tips for optimizing `UPDATE` performance in official MySQL documentation. Furthermore, these tips do not give estimates of how much they may improve performance. The benchmarks we run here are intended to shed some light on these shortcomings. Some of the tips for optimizing `INSERT` performance may be applicable for `UPDATE` statements.
 
-The `update_benchmark` tool is intended to be run from a client host that will be connecting to a remote MySQL server over the network. The `update_benchmark` allows test data to be easily and quickly inserted into MySQL. All of the inserts and updates it performs will be done in a single-threaded process. This process will reuse the same database connection for every query.
+The `update_benchmark` script is intended to be run from a client host that will be connecting to a remote MySQL server over the network. The `update_benchmark` script allows test data to be easily and quickly inserted into MySQL. All of the inserts and updates it performs will be done in a single-threaded process. This process will reuse the same database connection for every query.
 
 ## Usage
 ....
@@ -31,17 +32,15 @@ Usage: ./update_benchmark -H HOST -P PORT -u USER -p PASSWORD -T TABLE -t TEST_T
 
 ## Benchmark equipment and setup
 
-We ran these benchmark tests against MySQL Percona server:
+We ran these benchmark tests against Percona Server for MySQL:
 ....
 % mysql --version
 mysql  Ver 14.14 Distrib 5.7.29-32, for Linux (x86_64) using  6.2
 ....
 
-The MySQL server machine was hosted in google cloud platform on an `n2-highmem-4` instance (4 vCPUs, 32 GB memory) with Intel Cascade Lake CPU platform. Queries were issued to the server from a remote client host. MySQL had a 15 GB buffer pool.
+The MySQL server machine was hosted in google cloud platform on an `n2-highmem-4` instance (4 vCPUs, 32 GB memory) with Intel Cascade Lake CPU platform. MySQL data was stored on a 38 GB SSD persistent disk. Queries were issued to the server from a remote client host. We tested against InnoDB tables. MySQL had a 15 GB buffer pool.
 
-We tested against InnoDB tables.
-
-## Updating data benchmark results
+## Updating data when table fits in buffer pool: benchmark results
 
 In the below tests, we first inserted 1,000,000 rows into a test table with the following schema:
 
@@ -85,7 +84,7 @@ The "individual update" test is the most "naive" method. It will essentially run
 UPDATE dasl.dasl_test SET user_id = :user_id WHERE email = :email
 ....
 
-We tested executing the queries in primary key order (sorted by email) and random order. Updating that data in random vs sorted primary key order did not appear to affect performance much. In both cases, the median benchmark time was 46 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _1,000,000 individual updates_ heading.
+We tested executing the queries in primary key order (sorted by email) and random order. Updating the data in random vs sorted primary key order did not appear to affect performance much. In both cases, the median benchmark time was 46 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _updating 1,000,000 rows via individual updates_ heading.
 
 ### Method 2: individual updates within a transaction, varying transaction batch size
 The "transaction" test improves upon Method 1 by wrapping batches of UPDATE statements in database transactions. Essentially, it will do something like:
@@ -114,7 +113,7 @@ ____
 
 Once again, we tested executing the queries in primary key order (sorted by email) and random order. Updating the data in sorted primary key order may have helped marginally, but not by much. Increasing the batch size helped up to a certain point. There appears to be diminishing returns to increasing batch size beyond 10,000. When increasing batch size beyond 100,000, performance may be adversely impacted. Thus we recommend a sweet spot of 10,000 for batch size.
 
-Using a batch size of 10,000, the median benchmark time for updating in random order was 3.7 minutes, and the median benchmark time for updating in sorted primary key order was 3.6 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _1,000,000 individual updates in transaction, varying transaction batch size_ heading. This is approximately a 12x speedup compared to Method 1.
+Using a batch size of 10,000, the median benchmark time for updating in random order was 3.7 minutes, and the median benchmark time for updating in sorted primary key order was 3.6 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _updating 1,000,000 rows via individual updates in transactions, varying transaction batch size_ heading. This is approximately a 12x speedup compared to Method 1.
 
 ### Method 3: 1,000,000 IODKU updates, varying IODKU batch size
 
@@ -125,7 +124,7 @@ UPDATE dasl.dasl_test SET user_id = :user_id
 WHERE email IN ('user1@example.com', 'user2@example.com', ..., 'userN@example.com');
 ....
 
-But this would update every row matching the where clause with the same `user_id`. In our examples, we want to update each row with a different `user_id`.
+But this would update every row matching the `WHERE` clause with the same `user_id`. In our examples, we want to update each row with a different `user_id`.
 
 MySQL provides a SQL construct `INSERT ... ON DUPLICATE KEY UPDATE ...` (IODKU) that may be used as a bulk update query:
 ....
@@ -134,7 +133,7 @@ INSERT INTO dasl.dasl_test (email, user_id) VALUES
 ON DUPLICATE KEY UPDATE user_id = VALUES(user_id);
 ....
 
-Each row of a MySQL table is guaranteed to have a unique value for its primary key. Inserting a row with the same primary key as an existing row will generate a duplicate key MySQL error. If we construct the values we are inserting such that they are guaranteed generate a duplicate key error (i.e. the emails we are attempting to `INSERT` already exist in the table), then the `ON DUPLICATE KEY UPDATE` clause of the IODKU query will get executed. In the above example, this will result in each row being updated with a different `user_id` that was specified in the `VALUES` clause of the statement.
+MySQL enforces uniqueness on a table's primary key. Thus, inserting a row with the same primary key as an existing row will generate a duplicate key MySQL error. If we construct the values we are inserting such that they are guaranteed generate duplicate key errors (i.e. the emails we are attempting to `INSERT` already exist in the table), then the `ON DUPLICATE KEY UPDATE` clause of the IODKU query will get executed. In the above example, this will result in each row being updated with a different `user_id` that was specified in the `VALUES` clause of the statement.
 
 For example, given our schema:
 ....
@@ -192,9 +191,29 @@ The batch size governs how many rows we update with each SQL statement. The intu
 
 Once again, we tested executing the queries in primary key order (sorted by email) and random order. Unlike in previous approaches we tested, updating the data in sorted primary key order had a clearer performance benefit with this approach. Like with Method 2, Increasing the batch size helped up to a certain point. There appears to be diminishing returns to increasing batch size beyond 10,000. When increasing batch size beyond 100,000, performance may be adversely impacted. Thus we again recommend a sweet spot of 10,000 for batch size.
 
-Using a batch size of 10,000, the median benchmark time for updating in random order was 25.1 seconds, and the median benchmark time for updating in sorted primary key order was 21.0 seconds. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _1,000,000 iodku updates, varying iodku batch size_ heading. This is approximately a 10x speedup compared to Method 2 and a 130x speedup compared with Method 1.
+Using a batch size of 10,000, the median benchmark time for updating in random order was 25.1 seconds, and the median benchmark time for updating in sorted primary key order was 21.0 seconds. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _updating 1,000,000 rows via iodku, varying iodku batch size_ heading. This is approximately a 10x speedup compared to Method 2 and a 130x speedup compared with Method 1.
+
+## Updating data when table does not fit in buffer pool: benchmark results
+In the below tests, we first inserted 500,000,000 rows into a test table with the following schema:
+
+....
+CREATE TABLE `dasl_test` (
+  `email` varchar(50) NOT NULL,
+  `user_id` bigint(20) unsigned NOT NULL DEFAULT '0',
+  PRIMARY KEY (`email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8
+....
+
+We inserted this data using the `update_benchmark` script:
+....
+./update_benchmark -H MYSQL_HOST -P 3306 -u MYSQL_USER -p MYSQL_PASSWORD -T dasl.dasl_test -t insert -b 10000 -f -s -d -n 500000000
+....
+
+The `update_benchmark` script would generate random emails for each of the 500,000,000 rows it inserted. Each `user_id` would be set to `0`. Next, we would see how long it took to update the `user_id` column to a unique value for each row using various methods. These tests were designed to be similar to how one might backfill a new `user_id` column on a table. We ran a similar suite of tests as we did in the above section "Updating data when table fits in buffer pool: benchmark results".
+
+### Method 1: individual updates
+TODO
 
 ## Future work
 
 * Test the optimal strategy for parallelizing work. In these benchmark tests, all updates were done in a single thread.
-* Test again on tables that are too large to fully fit in the buffer pool
