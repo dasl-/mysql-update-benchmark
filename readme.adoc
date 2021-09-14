@@ -209,7 +209,7 @@ We inserted this data using the `update_benchmark` script:
 ./update_benchmark -H MYSQL_HOST -P 3306 -u MYSQL_USER -p MYSQL_PASSWORD -T dasl.dasl_test -t insert -b 10000 -f -s -d -n 500000000
 ....
 
-The `update_benchmark` script would generate random emails for each of the 500,000,000 rows it inserted. Each `user_id` would be set to `0`. Next, we would see how long it took to update the `user_id` column to a unique value for each row using various methods. These tests were designed to be similar to how one might backfill a new `user_id` column on a table. We ran a similar suite of tests as we did in the above section "Updating data when table fits in buffer pool: benchmark results".
+The `update_benchmark` script would generate random emails for each of the 500,000,000 rows it inserted. Each `user_id` would be set to `0`. Next, we would see how long it took to update the `user_id` column to a unique value for each row using various methods. These tests were designed to be similar to how one might backfill a new `user_id` column on a table. We ran a similar suite of tests as we did in the above section #updating-data-when-table-fits-in-buffer-pool-benchmark-results[Updating data when table fits in buffer pool: benchmark results].
 
 ### Method 1: individual updates
 TODO
