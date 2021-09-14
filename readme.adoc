@@ -70,7 +70,7 @@ ____
 
 MySQL documentation also provides several https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[InnoDB specific tips].
 
-It is likely that the entire 1,000,000 row table fit into the buffer pool. The buffer pool is a RAM based cache for InnoDB table data. Usage of the buffer pool can prevent disk reads, which are generally much slower than reading from RAM. https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[InnoDB documentation] states writing data in primary key order can give a performance boost in many cases, although the boost may be more apparent in tables that do not fit in the buffer pool. Thus, our performance numbers may change when run on larger tables:
+It is likely that the entire 1,000,000 row table fit into the https://dev.mysql.com/doc/refman/5.7/en/innodb-buffer-pool.html[buffer pool]. The buffer pool is a RAM based cache for InnoDB table data. Usage of the buffer pool can prevent disk reads, which are generally much slower than reading from RAM. https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[InnoDB documentation] states writing data in primary key order can give a performance boost in many cases, although the boost may be more apparent in tables that do not fit in the buffer pool. Thus, our performance numbers may change when run on larger tables:
 ____
 When performing bulk inserts, it is faster to insert rows in PRIMARY KEY order. InnoDB tables use a clustered index, which makes it relatively fast to use data in the order of the PRIMARY KEY. Performing bulk inserts in PRIMARY KEY order is particularly important for tables that do not fit entirely within the buffer pool.
 ____
