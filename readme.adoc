@@ -70,9 +70,9 @@ ____
 
 MySQL documentation also provides several https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[InnoDB specific tips].
 
-It is likely that the entire 1,000,000 row table fit into the buffer pool. The buffer pool is a RAM based cache for InnoDB table data. Usage of the buffer pool can prevent disk reads, which are generally slower. https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[InnoDB documentation] states writing data in primary key order can give a performance boost in many cases, although the boost may be more apparent in tables that do not fit in the buffer pool. Thus, our performance numbers may change when run on larger tables:
+It is likely that the entire 1,000,000 row table fit into the buffer pool. The buffer pool is a RAM based cache for InnoDB table data. Usage of the buffer pool can prevent disk reads, which are generally much slower than reading from RAM. https://dev.mysql.com/doc/refman/5.7/en/optimizing-innodb-bulk-data-loading.html[InnoDB documentation] states writing data in primary key order can give a performance boost in many cases, although the boost may be more apparent in tables that do not fit in the buffer pool. Thus, our performance numbers may change when run on larger tables:
 ____
- When performing bulk inserts, it is faster to insert rows in PRIMARY KEY order. InnoDB tables use a clustered index, which makes it relatively fast to use data in the order of the PRIMARY KEY. Performing bulk inserts in PRIMARY KEY order is particularly important for tables that do not fit entirely within the buffer pool.
+When performing bulk inserts, it is faster to insert rows in PRIMARY KEY order. InnoDB tables use a clustered index, which makes it relatively fast to use data in the order of the PRIMARY KEY. Performing bulk inserts in PRIMARY KEY order is particularly important for tables that do not fit entirely within the buffer pool.
 ____
 
 ### Method 1: individual updates
@@ -118,7 +118,7 @@ Using a batch size of 10,000, the median benchmark time for updating in random o
 MySQL's UPDATE statement does not allow us to perform bulk updates where each row gets a unique value for its update. Using an UPDATE statement, we could issue a query like:
 ....
 UPDATE dasl.dasl_test SET user_id = :user_id
-WHERE email in ('user1@example.com', 'user2@example.com', ..., 'userN@example.com');
+WHERE email IN ('user1@example.com', 'user2@example.com', ..., 'userN@example.com');
 ....
 
 But this would update every row matching the where clause with the same `user_id`. In our examples, we want to update each row with a different `user_id`.
@@ -152,7 +152,7 @@ If we have the following data in the table:
 +-------------------+---------+
 ....
 
-Then if we issue a IODKU statement:
+Then if we issue an IODKU statement:
 ....
 INSERT INTO dasl.dasl_test (email, user_id) VALUES
 ('user1@example.com', 42798), ('user2@example.com', 29238), ('user3@example.com', 987238)
