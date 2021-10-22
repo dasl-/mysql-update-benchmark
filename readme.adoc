@@ -133,7 +133,7 @@ INSERT INTO dasl.dasl_test (email, user_id) VALUES
 ON DUPLICATE KEY UPDATE user_id = VALUES(user_id);
 ....
 
-MySQL enforces uniqueness on a table's primary key. Thus, inserting a row with the same primary key as an existing row will generate a duplicate key MySQL error. If we construct the values we are inserting such that they are guaranteed generate duplicate key errors (i.e. the emails we are attempting to `INSERT` already exist in the table), then the `ON DUPLICATE KEY UPDATE` clause of the IODKU query will get executed. In the above example, this will result in each row being updated with a different `user_id` that was specified in the `VALUES` clause of the statement.
+MySQL enforces uniqueness on a table's primary key. Thus, inserting a row with the same primary key as an existing row will generate a duplicate key MySQL error. If we construct the values we are inserting such that they are guaranteed to generate duplicate key errors (i.e. the emails we are attempting to `INSERT` already exist in the table), then the `ON DUPLICATE KEY UPDATE` clause of the IODKU query will get executed. In the above example, this will result in each row being updated with a different `user_id` that was specified in the `VALUES` clause of the statement.
 
 For example, given our schema:
 ....
