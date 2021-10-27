@@ -187,20 +187,20 @@ This table should be small enough that it fits in the https://dev.mysql.com/doc/
 ./update_benchmark -H MYSQL_HOST -P 3306 -u MYSQL_USER -p MYSQL_PASSWORD -T dasl.dasl_test -t insert -b 10000 -f -s -d
 ....
 
-The `update_benchmark` script would generate random emails for each of the 1,000,000 rows it inserted. Each `user_id` would be set to `0`. Next, we would see how long it took to update the `user_id` column to a unique value for each row using various methods. These tests were designed to be similar to how one might backfill a new `user_id` column on a table.
+The `update_benchmark` script would generate random emails for each of the 1,000,000 rows it inserted. Each `user_id` would be set to `0`. Next, we would see how long it took to update the `user_id` column to a unique value for each row using various methods. These benchmark tests were designed to be similar to how one might backfill a new `user_id` column on a table.
 
 ### Method 1: individual updates
-Updating the data in random vs sorted primary key order did not appear to affect performance much. In both cases, the median benchmark time was 46 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _updating 1,000,000 rows via individual updates_ heading.
+Updating the data in random vs sorted primary key order did not appear to affect performance much. In both cases, the median benchmark time was 46 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the heading _updating 1,000,000 rows via individual updates_.
 
 ### Method 2: individual updates within a transaction, varying transaction batch size
 Once again, we tested executing the queries in primary key order (sorted by email) and random order. Updating the data in sorted primary key order may have helped marginally, but not by much. Increasing the batch size helped up to a certain point. There appears to be diminishing returns to increasing batch size beyond 10,000. When increasing batch size beyond 100,000, performance may be adversely impacted. Thus we recommend a sweet spot of 10,000 for batch size.
 
-Using a batch size of 10,000, the median benchmark time for updating in random order was 3.7 minutes, and the median benchmark time for updating in sorted primary key order was 3.6 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _updating 1,000,000 rows via individual updates in transactions, varying transaction batch size_ heading. *This is approximately a 12x speedup compared to Method 1.*
+Using a batch size of 10,000, the median benchmark time for updating in random order was 3.7 minutes, and the median benchmark time for updating in sorted primary key order was 3.6 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the heading _updating 1,000,000 rows via individual updates in transactions, varying transaction batch size_. *This is approximately a 12x speedup compared to Method 1.*
 
 ### Method 3: IODKU updates, varying IODKU batch size
-Once again, we tested executing the queries in primary key order (sorted by email) and random order. Unlike in previous approaches we tested, updating the data in sorted primary key order had a clearer performance benefit with this approach. Like with Method 2, Increasing the batch size helped up to a certain point. There appears to be diminishing returns to increasing batch size beyond 10,000. When increasing batch size beyond 100,000, performance may be adversely impacted. Thus we again recommend a sweet spot of 10,000 for batch size.
+Once again, we tested executing the queries in primary key order (sorted by email) and random order. Unlike in Methods 1 and 2, updating the data in sorted primary key order had a clearer performance benefit with this approach. Like with Method 2, increasing the batch size helped up to a certain point. There appears to be diminishing returns to increasing batch size beyond 10,000. When increasing batch size beyond 100,000, performance may be adversely impacted. Thus we again recommend a sweet spot of 10,000 for batch size.
 
-Using a batch size of 10,000, the median benchmark time for updating in random order was 25.1 seconds, and the median benchmark time for updating in sorted primary key order was 21.0 seconds. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the _updating 1,000,000 rows via iodku, varying iodku batch size_ heading. *This is approximately a 10x speedup compared to Method 2 and a 130x speedup compared with Method 1.*
+Using a batch size of 10,000, the median benchmark time for updating in random order was 25.1 seconds, and the median benchmark time for updating in sorted primary key order was 21.0 seconds. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the heading _updating 1,000,000 rows via iodku, varying iodku batch size_. *This is approximately a 10x speedup compared to Method 2 and a 130x speedup compared with Method 1.*
 
 ## Updating data when table is too big to fit in buffer pool: benchmark results
 In the below tests, we first inserted 500,000,000 rows into a test table with the same schema as before:
@@ -213,15 +213,25 @@ CREATE TABLE `dasl_test` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8
 ....
 
-This table should be large enough that it does not entirely fit in the buffer pool. We inserted this data using the `update_benchmark` script:
+This table should be large enough that it does not entirely fit in the buffer pool. Thus, sorting the data in primary key order may be more impactful than if the table were smaller than the buffer pool. We inserted this data using the `update_benchmark` script:
 ....
 ./update_benchmark -H MYSQL_HOST -P 3306 -u MYSQL_USER -p MYSQL_PASSWORD -T dasl.dasl_test -t insert -b 10000 -f -s -d -n 500000000
 ....
 
-The `update_benchmark` script would generate random emails for each of the 500,000,000 rows it inserted. Each `user_id` would be set to `0`. Next, we would see how long it took to update the `user_id` column to a unique value for each row using various methods. These tests were designed to be similar to how one might backfill a new `user_id` column on a table. We ran a similar suite of tests as we did in the above section link:#updating-data-when-table-fits-in-buffer-pool-benchmark-results[Updating data when table fits in buffer pool: benchmark results].
+The `update_benchmark` script would generate random emails for each of the 500,000,000 rows it inserted. Each `user_id` would be set to `0`. Next, we would see how long it took to update the `user_id` column to a unique value for a subset of these rows (the first 125,000,000 rows) using various methods. These benchmark tests were designed to be similar to how one might backfill a new `user_id` column on a table. We ran a similar suite of tests as we did in the above section link:#updating-data-when-table-fits-in-buffer-pool-benchmark-results[Updating data when table fits in buffer pool: benchmark results].
 
 ### Method 1: individual updates
-TODO
+Updating the data in sorted primary key order was only marginally faster than updating in random order. In the random order case, the median benchmark time was 52.7 hours, whereas in the sorted case, the median benchmark time was 51.9 hours. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the heading _updating 125,000,000 rows via individual updates_.
+
+### Method 2: individual updates within a transaction, varying transaction batch size
+Once again, we tested executing the queries in primary key order (sorted by email) and random order. Updating the data in sorted primary key order had a clear performance benefit. Increasing the batch size helped up to a certain point. There appears to be diminishing returns to increasing batch size beyond 10,000. When increasing batch size beyond 10,000, performance may be adversely impacted. Thus we recommend a sweet spot of 10,000 for batch size.
+
+Using a batch size of 10,000, the median benchmark time for updating in random order was 9.5 hours, and the median benchmark time for updating in sorted primary key order was 6.7 hours. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the heading _updating 125,000,000 rows via individual updates in transactions, varying transaction batch size_. *This is approximately an 8x speedup compared to Method 1.*
+
+### Method 3: IODKU updates, varying IODKU batch size
+Once again, we tested executing the queries in primary key order (sorted by email) and random order. As with Method 2, updating the data in sorted primary key order had a clear performance benefit. Also like with Method 2, increasing the batch size helped up to a certain point. Although performance continued to improve in batch sizes larger than 10,000, I'd be wary of potentially locking rows in the tables for extended periods of time when using larger batch sizes, as individual statement execution times may increase (TODO: this could be investigated more thoroughly). And the benefits of batch sizes larger than 10,000 were relatively small.
+
+Using a batch size of 10,000, the median benchmark time for updating in random order was 6.1 hours, and the median benchmark time for updating in sorted primary key order was 50.6 minutes. Full results are in https://docs.google.com/spreadsheets/d/1rojlWUPbvqDWQ4Wu_x1oPGRQtRn_KYsRjpWUXOZlK1o/edit#gid=0[this spreadsheet] under the heading _updating 1,000,000 rows via iodku, varying iodku batch size_. *This is approximately an 8x speedup compared to Method 2 and a 60x speedup compared with Method 1.*
 
 ## Future work
 
