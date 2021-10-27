@@ -40,7 +40,7 @@ mysql  Ver 14.14 Distrib 5.7.29-32, for Linux (x86_64) using  6.2
 
 The MySQL server machine was hosted in google cloud platform on an `n2-highmem-4` instance (4 vCPUs, 32 GB memory) with Intel Cascade Lake CPU platform. MySQL data was stored on a 38 GB SSD persistent disk. Queries were issued to the server from a remote client host. We tested against InnoDB tables. MySQL had a 15 GB buffer pool.
 
-## Methods
+## Methods used
 
 MySQL https://dev.mysql.com/doc/refman/5.7/en/insert-optimization.html[documentation] gives several tips about optimizing INSERT performance, some of which may be applicable to optimizing UPDATE performance:
 ____
