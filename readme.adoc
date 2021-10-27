@@ -2,6 +2,9 @@
 :toc:
 :toclevels: 5
 
+## TLDR
+When performing bulk UPDATEs of your MySQL data (e.g. during backfills), use bulk `INSERT ... ON DUPLICATE KEY UPDATE ...` statements. Sort your data in primary key order. This can result in speed gains of 130x over the naive approach of performing one `UPDATE` statement per row.
+
 ## Introduction
 This repo contains a command line script https://github.com/dasl-/mysql-update-benchmark/blob/main/update_benchmark[`update_benchmark`] which allows us to compare the performance of different methods for updating data in MySQL.
 
